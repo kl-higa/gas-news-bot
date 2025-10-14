@@ -10,6 +10,26 @@ import axios from 'axios';
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// 起動時に環境変数の有無をログに出す
+console.log('ENV CHECK', {
+  GAS_WEBAPP_URL: process.env.GAS_WEBAPP_URL,
+  INTERNAL_BRIDGE_SECRET_SET: !!process.env.INTERNAL_BRIDGE_SECRET
+});
+
+// 確認用: /env にアクセスすると値が見える
+app.get('/env', (req, res) => {
+  res.json({
+    GAS_WEBAPP_URL: process.env.GAS_WEBAPP_URL || null,
+    INTERNAL_BRIDGE_SECRET_SET: !!process.env.INTERNAL_BRIDGE_SECRET
+  });
+});
+
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 8080;
+app.listen(port, () => console.log(`listening on ${port}`));
+
+
 // Slack署名検証用のシークレット
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || '';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
