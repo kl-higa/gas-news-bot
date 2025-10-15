@@ -86,18 +86,14 @@ app.post('/slack/actions', slackRaw, async (req: Request, res: Response) => {
     }
   }
 
-  // GAS に非同期転送（type=slackAction）
-  if (!GAS_WEBAPP_URL) {
-    console.error('GAS_WEBAPP_URL undefined (cannot forward Slack action)');
-    return;
-  }
+  // ★ ここを修正：Slackの rawBody をそのままGASに中継
   const url = `${GAS_WEBAPP_URL}?type=slackAction&internal=${encodeURIComponent(INTERNAL_BRIDGE_SECRET)}`;
   try {
-    const resp = await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json' },
+    await axios.post(url, rawBody, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 25000
     });
-    console.log('Forwarded to GAS (slackAction):', resp.status);
+    console.log('Forwarded raw payload to GAS (slackAction)');
   } catch (e: any) {
     console.error('Failed to forward to GAS (slackAction):', e?.message || e);
   }
