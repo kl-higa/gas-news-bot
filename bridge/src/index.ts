@@ -58,9 +58,9 @@ const slackRaw = express.raw({ type: '*/*' });
 
 /**
  * Slack Interactivity エンドポイント
- * 3秒以内に ACK、非同期で GAS へ中継
+ * 3秒以内に ACK、非同期で GAS へ中継（リダイレクト対応・429/5xxリトライ・デュープ防止）
  */
-app.post('/slack/actions', slackRaw, async (req: Request, res: Response) => {
+app.post(['/slack/actions', '/slack/interactivity'], slackRaw, async (req: Request, res: Response) => {
   const signature = req.headers['x-slack-signature'] as string;
   const timestamp = req.headers['x-slack-request-timestamp'] as string;
   const rawBody = (req.body as Buffer).toString('utf8');
@@ -70,34 +70,85 @@ app.post('/slack/actions', slackRaw, async (req: Request, res: Response) => {
     return res.status(401).send('Unauthorized');
   }
 
-  // 3秒 ACK
+  // 3秒 ACK（以降は非同期）
   res.status(200).send('');
 
-  // payload 抽出
+  // payload（ログ用に一部だけパース）
   let payload: any;
   if (rawBody.startsWith('payload=')) {
-    const payloadStr = decodeURIComponent(rawBody.substring(8));
-    payload = JSON.parse(payloadStr);
+    try { payload = JSON.parse(decodeURIComponent(rawBody.substring(8))); }
+    catch { payload = { raw: true }; }
   } else {
-    try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      payload = { raw: rawBody };
-    }
+    try { payload = JSON.parse(rawBody); }
+    catch { payload = { raw: true }; }
   }
 
-  // ★ ここを修正：Slackの rawBody をそのままGASに中継
+  // ====== 転送先と共通ヘッダ ======
   const url = `${GAS_WEBAPP_URL}?type=slackAction&internal=${encodeURIComponent(INTERNAL_BRIDGE_SECRET)}`;
-  try {
-    await axios.post(url, rawBody, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 25000
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const body = rawBody; // payload=... 形式のまま
+
+  // ====== 簡易デュープ防止（直近60秒は同一イベントを弾く） ======
+  const evtKey =
+    (payload?.payload_id) ||
+    [
+      `ts:${payload?.container?.message_ts || payload?.message?.ts || 'none'}`,
+      `act:${payload?.actions?.[0]?.action_id || 'none'}`,
+      `usr:${payload?.user?.id || 'none'}`
+    ].join('|');
+
+  (global as any).__dedupe ||= new Map<string, number>();
+  const now = Date.now();
+  const last = (global as any).__dedupe.get(evtKey);
+  if (last && now - last < 60_000) {
+    console.log('Deduped slackAction', evtKey);
+    return;
+  }
+  (global as any).__dedupe.set(evtKey, now);
+
+  // ====== 302をPOST維持で追随・429/5xxは指数バックオフで最大3回再試行 ======
+  const postOnce = async (u: string) =>
+    axios.post(u, body, {
+      headers,
+      timeout: 25000,
+      maxRedirects: 0,               // 自動追随せず自分で処理
+      validateStatus: () => true     // ステータスで throw しない
     });
-    console.log('Forwarded raw payload to GAS (slackAction)');
+
+  try {
+    let resp = await postOnce(url);
+
+    // 302系は Location へ POST で追随
+    if ((resp.status === 301 || resp.status === 302 || resp.status === 303) && resp.headers?.location) {
+      resp = await postOnce(resp.headers.location);
+    }
+
+    let attempt = 1;
+    while ((resp.status === 429 || resp.status >= 500) && attempt <= 3) {
+      const wait = Math.min(2000 * attempt, 6000); // 2s→4s→6s
+      console.warn(`GAS resp ${resp.status}; retry in ${wait}ms (attempt ${attempt})`);
+      await new Promise(r => setTimeout(r, wait));
+      // 直前のレスポンスに最終URLがあればそれを使う
+      const nextUrl = (resp.request as any)?.res?.responseUrl || url;
+      resp = await postOnce(nextUrl);
+      if ((resp.status === 301 || resp.status === 302 || resp.status === 303) && resp.headers?.location) {
+        resp = await postOnce(resp.headers.location);
+      }
+      attempt++;
+    }
+
+    if (resp.status >= 400) {
+      const sample = typeof resp.data === 'string' ? resp.data.slice(0, 200) : JSON.stringify(resp.data || {});
+      console.error('GAS final error', resp.status, sample);
+    } else {
+      const sample = typeof resp.data === 'string' ? resp.data.slice(0, 80) : 'json';
+      console.log('GAS final ok', resp.status, sample);
+    }
   } catch (e: any) {
     console.error('Failed to forward to GAS (slackAction):', e?.message || e);
   }
 });
+
 
 /**
  * Cloud Scheduler 用: 定期投稿トリガ
