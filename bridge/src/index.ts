@@ -100,7 +100,7 @@ app.post(['/slack/actions', '/slack/interactivity'], slackRaw, async (req: Reque
   (global as any).__dedupe ||= new Map<string, number>();
   const now = Date.now();
   const last = (global as any).__dedupe.get(evtKey);
-  if (last && now - last < 60_000) {
+  if (last && now - last < 90_000) {
     console.log('Deduped slackAction', evtKey);
     return;
   }
@@ -125,7 +125,7 @@ app.post(['/slack/actions', '/slack/interactivity'], slackRaw, async (req: Reque
 
     let attempt = 1;
     while ((resp.status === 429 || resp.status >= 500) && attempt <= 3) {
-      const wait = Math.min(2000 * attempt, 6000); // 2s→4s→6s
+      const wait = Math.min(3000 * attempt, 9000); // 2s→4s→6s
       console.warn(`GAS resp ${resp.status}; retry in ${wait}ms (attempt ${attempt})`);
       await new Promise(r => setTimeout(r, wait));
       // 直前のレスポンスに最終URLがあればそれを使う
